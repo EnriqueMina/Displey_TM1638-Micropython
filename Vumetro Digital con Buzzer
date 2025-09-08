@@ -1,0 +1,122 @@
+from machine import Pin, PWM
+from time import sleep_ms
+
+#  Pines 
+DIO = Pin(21, Pin.OUT)
+CLK = Pin(22, Pin.OUT)
+STB = Pin(23, Pin.OUT)
+
+# Funciones TM1638 
+
+# Envía un byte (8 bits) al TM1638, uno por uno
+def shift_out(data):
+    for i in range(8):
+        CLK.off()
+        DIO.value((data >> i) & 1)  # extrae cada bit del dato
+        CLK.on()
+
+# Envía un comando al TM1638
+def cmd(c): 
+    STB.off()
+    shift_out(c)
+    STB.on()
+
+# Inicializa el módulo: enciende display y limpia todo
+def init():
+    cmd(0x8F)  # 0x8F = display ON + brillo máximo
+    clear()
+
+# Borra todos los LEDs y el display
+def clear():
+    cmd(0x40)        # Modo auto-incremento
+    STB.off()
+    shift_out(0xC0)  # Dirección inicial
+    for _ in range(16):
+        shift_out(0x00)  # Apaga 8 dígitos y 8 LEDs
+    STB.on()
+
+# Mapas de segmentos 
+# Cada valor enciende los segmentos necesarios para mostrar un número 0-9
+SEG = [
+    0x3F, # 0
+    0x06, # 1
+    0x5B, # 2
+    0x4F, # 3
+    0x66, # 4
+    0x6D, # 5
+    0x7D, # 6
+    0x07, # 7
+    0x7F, # 8
+    0x6F  # 9
+]
+
+# Muestra un número (0–9) en la posición indicada del display
+def show_num(num, pos=7):
+    cmd(0x44)                           # Modo fijo
+    STB.off()
+    shift_out(0xC0 + (pos << 1))        # Selección de posición
+    shift_out(SEG[num])                 # Patrón de segmentos
+    STB.on()
+
+# Enciende o apaga un LED individual
+def led(i, on):
+    cmd(0x44)
+    STB.off()
+    shift_out(0xC1 + (i << 1))          # Dirección LED
+    shift_out(1 if on else 0)           # 1 = encendido, 0 = apagado
+    STB.on()
+
+# Lee el estado de los botones del TM1638
+def buttons():
+    STB.off()
+    shift_out(0x42)       # Comando de lectura
+    val = 0
+    DIO.init(Pin.IN)      # Cambiar pin a entrada
+    for i in range(32):   # El TM1638 manda 4 bytes, pero solo usamos 1
+        CLK.off()
+        val |= (DIO.value() << i)  
+
+        CLK.on()
+    DIO.init(Pin.OUT)     # Volver a salida
+    STB.on()
+    return val & 0xFF     # Usamos solo los primeros 8 bits (8 botones)
+
+# Buzzer
+
+# Genera un sonido con el buzzer
+def beep(f, t):
+    b = PWM(Pin(5))   # Pin del buzzer
+    b.freq(f)         # Frecuencia en Hz → tono del sonido
+    b.duty(512)       # 50% ciclo de trabajo
+    sleep_ms(t)       # Tiempo que suena
+    b.deinit()        # Apaga el buzzer
+
+# Animación 
+
+def anim_reset():
+    for _ in range(3):
+        [led(i, 1) for i in range(8)]  # Enciende todos los LEDs
+        beep(1500, 100)                # Sonido de aviso
+        sleep_ms(150)
+        [led(i, 0) for i in range(8)]  # Apaga todos los LEDs
+        sleep_ms(150)
+    clear()  # Borra el display y LEDs
+
+# Programa principal
+
+init()        # Inicializa el TM1638
+nivel = 0     # Nivel inicial del vúmetro
+
+while True:
+    # Si se presiona el botón 1 → incrementa nivel
+    if buttons() & 0x01:  
+        if nivel < 8:                # Aumenta nivel si no está lleno
+            led(nivel, 1)            # Enciende LED correspondiente
+            nivel += 1
+            show_num(nivel)          # Muestra el nivel en el display
+            beep(2000, 80)           # Beep corto de confirmación
+        else:
+            anim_reset()             # Animación cuando se llena
+            nivel = 0                # Reinicia nivel a 0
+            
+    sleep_ms(200)  # Antirrebote (evita lecturas múltiples de un solo toque)
